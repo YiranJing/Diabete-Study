@@ -1,0 +1,570 @@
+---
+title: "EDA and Data cleaning for Assignment 1"
+author: "Yiran Jing 460244129"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: show
+    toc: yes
+    toc_float: true
+    fig_caption: true
+    df_print: paged
+  
+---
+
+# Executive Summary
+
+
+This report includes exploratory data analysis, outlier and missing value detection based on tech_biom and dict_biom Rdataset. 
+
+There are 4 low variance variables ("DIABBC", "HCHOLBC", "HSUGBC", and "HYPBC") with too less information compared with other columns. Secondly, `EXLWMBC`, `EXLWVBC`, `EXLWTBC` are exerciese minuates measurements, and they should be continuous variables instead of categorical variables, also the extreme values such as "9996", "9999" within these columns are wired, so be treated as outliers. Thirdly, there are some logical inconsistencies in column `FEMLSBC`, `DIABBC` and `BDYMSQ04`. In the section of outlier dectection, I check outliers based on both visualization and box plot statistics, and add `XXX_OUT` outlier indicator columns. The summary of outliers can be found in table 3.1. In terms of messing values, I produce visualization on the missingness amount and pattern for each variables and the combinations of missingness, also summarizing the prevalence of missingness in table 4.1. 
+
+Among all numerical variables, only `AGEC` has no detected outliers, and there are 7 numerical variables have outliers less than 2.5%, but `PHDCMHBC` has relative large missing percentage (7.6%). (See table 3.1). Overall 54 columns, there are 40 variables have missing values. The overall percentage of missing value is 34.1%, which is high, and there are 21 variables with missing percentage more than 60%. (See table 4.1). 
+
+Since missing value in the dataset are not at random with patterns, and the missing ratio is quite large, I didnot delete any column or row, since the missingness implies certain information and I want to keep as much information as possible. The final complete dataset has 12153 rows with 106 columns.
+
+The research topic of our group is "What the kinds of factors related to **Diabetes**", thus `DIABBC`(Whether has diabetes mellitus) and `GLUCFPD`(Fasting plasma glucose status (mmol/L)) can be the good response variables. 
+
+
+In next step, I will perform a PCA with missing values to explore the correlation between variables using R package *`missMDA`*. Moreover, I will delete some high correlated variables, for example, "EXLWMBC", "EXLWVBC", "EXLWTBC" are highly correlated with each other (corr > 97%). 
+
+```{r setup, include=FALSE}
+# Default knitting options
+knitr::opts_chunk$set(echo=TRUE, # Echo the code
+                      tidy=TRUE, # Nicely dity up code
+                      warning=FALSE, # No warnings please 
+                      message=FALSE) # No messages please
+
+options(warn=-1) # turn off all warnings
+
+# Suppress start up warnings when loading libraries
+library <- function(...) {
+  suppressPackageStartupMessages(base::library(...))
+}
+```
+
+```{r libraries, echo=FALSE}
+# Load in all libraries
+library(tidyverse)
+library(here)      # directory referencing
+library(readxl)    # reading Excel files
+library(janitor)   # data cleaning 
+library(stringr)   # string manimpuation
+library(tidyr)     # new tidy functions
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(scatterplot3d)
+library(GGally)
+library(varhandle)
+library(psych)
+library(qwraps2)
+library(naniar)
+library(knitr)
+library(kableExtra)
+library(Hmisc)
+library(ggridges)
+```
+
+
+```{r read_in_raw_data}
+# Load objects in study1.RData into my workspace
+load(file = "tech_data.Rdata")
+```
+
+# EDA
+
+Finding:
+
+- Low variance variables:
+    1. There are 4 low-variance variables "DIABBC", "HCHOLBC", "HSUGBC", and "HYPBC" based on self-defined selection rules. 
+    2. The low variance variables selection rules:
+       1. if factor has frequency less than 1% (i.e. less than 121 rows) or if factor has frequency more than 90% 
+       2. and if the unique values of that column are less than 5
+- Mismatches between the data and dictionary:
+    1. `EXLWMBC`, `EXLWVBC`, `EXLWTBC` are exerciese minuates measurements, should be mentioned as continuous variables, 
+    2. Also the extreme values such as "9996", "9999" within these columns are wired, thus I treat these value as outliers.
+- Logical inconsistencies
+    1. `FEMLSBC` (Female life stages): based on dictionary, FEMLSBC = 6 means none of these apply, it can have special meaning or indicating missing as well, which should be differ from value 1 to 5. And thus, it is locical inconsistency. 
+    2. `BDYMSQ04` (Whether currently on a diet): this variable by definition given in dictionary should be binary variable, with only 2 values. But this column includes also show different diet type. (1 means Currently on a diet to lose weight, 2 means Currently on a diet for health reasons etc.). It is logical incinsistency and should be separate into two columns: `diet or not` and `diet type`
+- Missing value detection based on data visualization (in the missing value detection section below)
+
+
+### Low variance variables
+
+Low-variance variales both continuous and categorical variables. The column has `relatively less information`, compared with other columns.
+
+The low variance variables selection rules:
+1. if factor has frequency less than 1% (i.e. less than 121 rows) or if factor has frequency more than 90% 
+2. and if the unique values of that column are less than 5
+
+Based on the rules above, we find 4 low-variance variables 
+
+* **"DIABBC"** Whether has diabetes mellitus
+* **"HCHOLBC"** Whether has high cholesterol
+* **"HSUGBC"** Whether has high sugar levels in blood/urine
+* **"HYPBC"** Whether has hypertensive disease
+
+They are all categorical variables, and we will delete them in the dataset, since they contain too less information and not useful in our dataset. 
+
+
+```{r, echo=FALSE}
+# find low-variance categorical variables of the given dataframe
+find_low_varance_col <- function(tech_data, types_data, lower_freq, upper_freq, n_columns){
+    # if some factor has frequency less than lower_freq or greater than upper_freq
+    # and if the unique values of that column are less than n_columns
+    
+    result_list <- c()
+    
+    check_biom = filter(types_data, variable_type %in% c("categorical", "continuous")) 
+
+    for (i in check_biom$variable_name){ # loop through tech columns 
+    
+        df <- tech_data %>%
+              group_by(!!rlang::sym(i)) %>% ## !!rlang:: （unquote variable name)
+              summarise(counts = n(), .groups = 'drop') %>%
+              mutate(freq = round(100*counts /sum(counts), 2)) # round to 2 decimals
+    
+        # apply selection rules
+        min_freq = min(df$freq)
+        max_freq = max(df$freq)
+        if (min_freq <= lower_freq || max_freq >= upper_freq){ # if some factor has frequency less than 1% or greater than 90%
+            if (dim(df)[1] <= n_columns) {
+                #cat("\n\nLow-variance categorical Variable:", i)
+                result_list <- c(result_list, i) # collect low variance columns
+            
+                # freq visualization
+                #p <- ggplot(tech_data, aes(!!rlang::sym(i))) + geom_bar(fill = "#0073C2FF")
+                #print(p)
+            }
+        }
+    
+    }
+    return (result_list)
+}
+```
+
+
+```{r, echo=FALSE}
+result_list = find_low_varance_col(tech_biom, 
+                                   types_biom, 1, 90, 4) # min freq 1%, max freq 90%, unique value <=4l
+
+df <- tech_biom %>%
+              group_by(!!rlang::sym(result_list[1])) %>% ## !!rlang:: （unquote variable name)
+              summarise(counts = n(), .groups = 'drop') %>%
+              mutate(freq = round(100*counts /sum(counts), 2)) # round to 2 decimals
+
+kable(df)
+```
+
+```{r, echo = FALSE}
+result_list = find_low_varance_col(tech_biom, 
+                                   types_biom, 1, 90, 4) # min freq 1%, max freq 90%, unique value <=4l
+
+df <- tech_biom %>%
+              group_by(!!rlang::sym(result_list[2])) %>% ## !!rlang:: （unquote variable name)
+              summarise(counts = n(), .groups = 'drop') %>%
+              mutate(freq = round(100*counts /sum(counts), 2)) # round to 2 decimals
+
+kable(df)
+```
+
+```{r, echo = FALSE}
+result_list = find_low_varance_col(tech_biom, 
+                                   types_biom, 1, 90, 4) # min freq 1%, max freq 90%, unique value <=4l
+
+df <- tech_biom %>%
+              group_by(!!rlang::sym(result_list[3])) %>% ## !!rlang:: （unquote variable name)
+              summarise(counts = n(), .groups = 'drop') %>%
+              mutate(freq = round(100*counts /sum(counts), 2)) # round to 2 decimals
+
+kable(df)
+```
+
+```{r, echo = FALSE}
+result_list = find_low_varance_col(tech_biom, 
+                                   types_biom, 1, 90, 4) # min freq 1%, max freq 90%, unique value <=4l
+
+df <- tech_biom %>%
+              group_by(!!rlang::sym(result_list[4])) %>% ## !!rlang:: （unquote variable name)
+              summarise(counts = n(), .groups = 'drop') %>%
+              mutate(freq = round(100*counts /sum(counts), 2)) # round to 2 decimals
+
+kable(df)
+```
+
+
+
+### Mismatches between the data and dictionary
+
+- `"EXLWMBC"`, `"EXLWVBC"`, `“EXLWTBC”` (Total):
+    1. They are exerciese minuates in last week, so they should be mentioned as continuous variables in the dictionary, not categorical variable. 
+    2. Also the extreme values such as "9996", "9999" within these columns are wired, since it is impossible for ppl to exercise so much within one week. So highly likely these values are missing or incorrect. I treat them as outliers. 
+     
+- Remedy: 
+    1. Convert factor format to numeric format
+    2. Add indicator columns for these three columns if their values are 9996 or 9999. called `EXLWTBC_OUT`, `EXLWMBC_OUT`, and `EXLWVBC_OUT`
+          
+```{r}
+new_tech_biom = tech_biom
+### Convert factor format to numeric format
+new_tech_biom[,"EXLWMBC"] = as.numeric(as.character(new_tech_biom[,"EXLWMBC"]))
+new_tech_biom[,"EXLWVBC"] = as.numeric(as.character(new_tech_biom[,"EXLWVBC"]))
+new_tech_biom[,"EXLWTBC"] = as.numeric(as.character(new_tech_biom[,"EXLWTBC"]))
+```
+
+
+```{r, echo=FALSE}
+sub_col = c("EXLWMBC", "EXLWVBC", "EXLWTBC")
+ggpairs(new_tech_biom[,sub_col])+ theme_bw()
+```
+From the pair plots above we can see that:
+
+1. The extreme values such as "9996", "9999" show above are outliers (incorrect values), we add indicator columns for these three columns if their values are 9996 or 9999. called `EXLWTBC_OUT`, `EXLWMBC_OUT`, and `EXLWVBC_OUT` if the value larger than 1500 mins. 
+2. "EXLWMBC", "EXLWVBC", "EXLWTBC" are highly correlated with each other (corr > 97%), so we shall use only one of columns in the final dataset
+
+```{r}
+# add outlier indicator
+new_tech_biom <- transform(new_tech_biom, EXLWMBC_OUT = ifelse(EXLWMBC > 1500, TRUE, FALSE))
+new_tech_biom <- transform(new_tech_biom, EXLWVBC_OUT = ifelse(EXLWVBC > 1500, TRUE, FALSE))
+new_tech_biom <- transform(new_tech_biom, EXLWTBC_OUT = ifelse(EXLWTBC > 1500, TRUE, FALSE))
+```
+### Logical inconsistencies
+
+There are something remotely problematic with the data.
+
+- `FEMLSBC` (Female life stages): based on dictionary, FEMLSBC = 6 means none of these apply, it can have special meaning or indicating missing as well, which should be differ from value 1 to 5. And thus, it is locical inconsistency. 
+
+- `BDYMSQ04` (Whether currently on a diet): this variable by definition given in dictionary should be binary variable, with only 2 values (Yes or No). But this column includes also show different diet type. (1 means Currently on a diet to lose weight, 2 means Currently on a diet for health reasons etc.). It is logical incinsistency and should be separate into two columns: `diet or not` and `diet type`
+
+- `DIABBC` (Whether has diabetes mellitus): this variable by definition given in dictionary should be binary variable, with only 2 values. But this column in tech_biom has 3 values: (1. Ever told has diabetes mellitus, still current and long term; 3. Ever told has diabetes mellitus, not current; 5. Never told has diabetes mellitus). It is logical incinsistency and should be separate into two columns: `current diabetes or not` and `diabetes history or not`
+
+```{r, echo=FALSE}
+# find low-variance categorical variables of the given dataframe
+plot_selected_col <- function(tech_data, problem_col){
+  
+    result_list <- c()
+
+    for (i in problem_col){ # loop through tech columns 
+    
+        df <- tech_data %>%
+              group_by(!!rlang::sym(i)) %>% ## !!rlang:: （unquote variable name)
+              summarise(counts = n(), .groups = 'drop') %>%
+              mutate(freq = round(100*counts /sum(counts), 2)) # round to 2 decimals
+    
+       
+        
+        result_list <- c(result_list, i) # collect low variance columns
+        #print(df) 
+            
+        # freq visualization
+        p <- ggplot(tech_data, aes(!!rlang::sym(i))) + geom_bar(fill = "#0073C2FF")
+        print(p)
+       
+    }
+    return (result_list)
+}
+```
+
+
+```{r}
+problem_col = c("FEMLSBC", "BDYMSQ04", "DIABBC")
+
+result_list1 = plot_selected_col(tech_biom, problem_col)
+```
+
+
+```{r, echo=FALSE}
+df <- tech_biom %>%
+              group_by(!!rlang::sym(problem_col[1])) %>% ## !!rlang:: （unquote variable name)
+              summarise(counts = n(), .groups = 'drop') %>%
+              mutate(freq = round(100*counts /sum(counts), 2)) # round to 2 decimals
+
+```
+
+```{r, echo=FALSE}
+df <- tech_biom %>%
+              group_by(!!rlang::sym(problem_col[2])) %>% ## !!rlang:: （unquote variable name)
+              summarise(counts = n(), .groups = 'drop') %>%
+              mutate(freq = round(100*counts /sum(counts), 2)) # round to 2 decimals
+
+```
+
+```{r, echo=FALSE}
+df <- tech_biom %>%
+              group_by(!!rlang::sym(problem_col[3])) %>% ## !!rlang:: （unquote variable name)
+              summarise(counts = n(), .groups = 'drop') %>%
+              mutate(freq = round(100*counts /sum(counts), 2)) # round to 2 decimals
+
+```
+
+
+### Check  missing pattern of  CVDMEDST
+- `CVDMEDST` (Dyslipidaemia status, given Persons aged 18 years and over who participated in the biomedical component and fasted for 8 hours or more)
+
+The missing value reported above are **not at random**, and there are patterns in the missing data. In this report, I give an example of CVDMEDST
+Since CVDMEDST has the most missing value, we visualization to find the reason of missing.
+
+Based on the definition of CVDMEDST, it is related to age and fasted state, the figure 1.1 shows the missingness interaction among these 3 variables. From figure 1.1, we can see that 8022 cases missing in both "CVDMEDST", "FASTSTAD". From Figure 1.3, we can confirm that all people who didnot fasted, have missing value in CVDMEDST, which is logically correct. And some fasted people with missing value in CVDMEDST, since their ages are less than 18, which can be confirmed by figure 1.2. 
+
+Therefore, we shouldnot delete `CVDMEDST` column or rows with missing value, as they stands for specific group with specific information. 
+
+Figure 1.1
+```{r}
+# Figure 1.1
+selected_col = c("AGEC", "CVDMEDST", "FASTSTAD")
+gg_miss_upset(tech_biom[, selected_col], text.scale = 2) 
+
+```
+figure 1.2
+```{r}
+# figure 1.2
+ggdensity(tech_biom, x = "AGEC",
+   add = "mean", rug = TRUE,
+   color = "CVDMEDST", fill = "CVDMEDST",
+   #palette = c("#0073C2FF", "#FC4E07")
+         )
+```
+Figure 1.3
+```{r}
+### Figure 1.3
+# 1. Fasted (8 hours or more)
+# 2. Did not fast
+# stacked bar chart
+ggplot(tech_biom, 
+       aes(x = CVDMEDST, 
+           fill = FASTSTAD),
+      title = "CVDMEDST VS Fasted") + 
+  geom_bar(position = "stack")
+```
+
+
+# Outlier detection
+
+1. Outliters in `"EXLWMBC"`, `"EXLWVBC"`, `“EXLWTBC”`:
+     - As mentioned in EDA part, the extreme values such as "9996", "9999" are incorrect outliers, so I indicator columns for these three columns if their values are 9996 or 9999. called `EXLWTBC_OUT`, `EXLWMBC_OUT`, and `EXLWVBC_OUT`
+2. Outliers Visualization example: `BMISC`:
+     - outliers can be clearly see from the boxplot drawn below
+     - The BMI is the healthy indicator calculated based on hight and weight, so maynbe PHDKGWBC(Measured weight) and PHDCMHBC(Measured height) are not necessary be included in the final dataset
+     
+3. Detect all outliers in numerical columns based on Box Plot Statistics
+     - Add `XXX_OUT` indicator columns if the values of any data points which lie beyond the extremes of the whiskers 
+     
+4. Outlier summary table:
+     1. `EXLWMBC_OUT`, `EXLWVBC_OUT`, `EXLWTBC_OUT` have the most outlier percentage (> 20%)
+     1. `PHDCMHBC` has relative large missing percentage (7.6%). 
+     2. `AGEC` has no detected outliers
+     2. The other 7 numerical variables have less than 2.5% outliers.
+     
+     
+### Outliers in BMISC
+
+From the boxplot below, we can clearly see the outliers with value more than 50. In the case that the body weight and hight are correctly recorded, we can recalculated these value.
+
+The 3d plot below shows the relationship among PHDKGWBC(Measured weight), PHDCMHBC (Measured height (cm)) and BMISC (Body mass index (BMI)). We can clearly see outliers lies wiehn BMI > 70.
+```{r}
+ggplot(new_tech_biom, aes(x = factor(1), y = BMISC)) +
+  geom_boxplot(width = 0.4, fill = "white")
+```
+
+
+```{r}
+## Plot PHDKGWBC Measured weight (kg) VS PHDCMHBC Measured height (cm) VS BMISC Body mass index (BMI)
+sub_col = c("PHDKGWBC", "PHDCMHBC", "BMISC")
+scatterplot3d(
+  new_tech_biom[,sub_col], pch = 19, color = "steelblue",
+   grid = TRUE, box = FALSE,
+   mar = c(3, 3, 0.5, 3)        
+  )
+```
+
+### Detect all outliers in numerical columns
+
+We define outliers based on Box Plot Statistics, the values of any data points which lie beyond the extremes of the whiskers 
+
+```{r}
+is_outlier <- function(x) { return(x%in%boxplot(x, plot = FALSE)$out); }
+out_name <- function(x) { return(paste0(x, "_OUT")); } # add corresponding outlier indicator columns
+```
+
+
+```{r}
+sub_col = c(filter(types_biom, variable_type %in% c("continuous"))$variable_name)
+sub_cont = new_tech_biom[,sub_col]
+```
+
+
+```{r}
+sub_cont_out  <- sub_cont %>% 
+             mutate_all(.funs = is_outlier) %>%
+             rename_with(.fn=out_name)
+new_tech_biom <- bind_cols(new_tech_biom, sub_cont_out)
+```
+### Table summarizing the prevalence of outliers in the dataset
+We use outlier indicator columns to summarizing the prevalence of outliers
+
+From the table below we can see that:
+
+1. `EXLWMBC_OUT`, `EXLWVBC_OUT`, `EXLWTBC_OUT` have the most outlier (more than 2000)
+1. `PHDCMHBC` has relative large missing percentage (more than 900) (7.6%).
+2. `AGEC` has no detected outliers
+2. The other 7 numerical variables have aound or less than 200 outliers (2.5%).
+
+```{r, echo = FALSE}
+out_summary = select(new_tech_biom, contains("_OUT")) # collect outlier indicators
+```
+
+Table 3.1
+```{r, echo = FALSE}
+## Summary table of Outliers by continuous variable
+## Table 3.1
+## Table in HTML format
+summary(out_summary) %>%
+    kable(booktabs = TRUE, digits = 2,
+          caption = "Table 3.1: Outliers by continuous variable")  %>%
+    kable_styling(bootstrap_options = "striped", latex_options = "HOLD_position")
+```
+
+
+```{r, echo = FALSE}
+## Table 3.2
+# Inplace table 
+#kable(Hmisc::describe(out_summary))
+```
+
+
+
+# Missing values
+
+Finding:
+
+* There are 40 variables have missing values. Overall 54 columns, only 14 variables have no missing value.
+* The overall percentage of missing value is 34.1%, which is high, and there are 21 variables with missing percentage more than 60%.
+* `CVDMEDST` has the most missing percentage (74%), and there are 278 cases where only missing CVDMEDST
+* Combinations of missingness of the variables:
+   1. There are 8022 cases where 21 variables have missing values.
+   2. There are 630 cases where 7 variables have missing.
+   3. There are 77 cases where 20 variables have missing values. 37 cases have missing 2 variables.
+   4. There are some cases (less than 10), have missing value combinations. And we can remove these since they could have little impact on the result.
+
+
+### Visualization to determine missingness amount and pattern
+We only consider the dataset, exclude the indicator columns (such as XXX_MISS, XXX_OUT)
+```{r, echo=FALSE}
+# We only consider the dataset, exclude the indicator columns (such as XXX_MISS, XXX_OUT)
+miss_indicator = colnames(select(new_tech_biom,contains("_MISS")))
+out_indicator = colnames(select(new_tech_biom, contains("_OUT")))
+
+visual_col = c()
+                
+for (col in colnames(new_tech_biom)){
+    
+    if ((is.element(col, miss_indicator)== FALSE) && (is.element(col, out_indicator)== FALSE)){
+        visual_col <- c(visual_col, col)
+    }
+}
+       
+```
+
+
+```{r, echo=FALSE}
+visual_dat = new_tech_biom[, visual_col]
+drop <- c("TRIGRESB.1")
+visual_dat = visual_dat[,!(names(visual_dat) %in% drop)]
+
+# calculate the overall missing percentage
+overall_miss = mean(is.na(visual_dat)) 
+
+```
+
+
+- The number of missing variables are: `r n_var_miss(visual_dat)`
+- The overall missing percentage is (%): `r round(overall_miss*100, 1)`
+- The number of rows without missing values: `r n_complete(visual_dat)`
+- The number of rows with missing values: `r n_miss(visual_dat)`
+
+
+```{r}
+# figure 4.1 
+# Visualizing relative amounts of missingness
+gg_miss_var(visual_dat) + labs(y = "Look at all the missing ones")
+```
+
+```{r}
+# figure 4.2
+# Visualizing the percentage of missings
+gg_miss_var(visual_dat, show_pct = TRUE)
+```
+
+From the figures above, we can see that:
+
+1. There are some variables have large amount of missing data. 
+    - `CVDMEDST` has the most missing percentage (74%)
+    - there are 20 more variables with relatively high missing value (more than 7500 rows are missing, more than 60%)
+    
+ 
+```{r}
+# figure 4.3
+# Visualizing Combinations of missingness of the variables
+gg_miss_upset(visual_dat, text.scale = 1, nsets = 21) 
+```
+
+
+From the figure above, we can see that:
+
+- `CVDMEDST` has the most missing values, and there are 278 cases where only missing `CVDMEDST`
+- There are 8022 cases where 21 variables have missing values. 
+- There are 630 cases where 7 variables have missing.
+- There are 77 cases where 20 variables have missing values. 37 cases have missing 2 variables.
+- There are some cases (less than 10), have missing value combinations. And we can remove these since they could have little impact on the result.
+
+### Table susmmaring the prebalence of missingness
+
+#### Table 4.1: Missing values by variable
+
+The table 4.1 give us the number of missing value and missing percentage for each variable, (summarizing the information included in figure 4.1 and 4.2). 
+
+```{r}
+# Table 4.1: Observe individually how many missing values a variable has.
+# generate HTML table outside
+miss_var_summary(visual_dat) %>% 
+    kable(booktabs = TRUE, digits = 2,
+          col.names = c("Variable","number of missing values", 
+                        "% of missing values"),
+          caption = "Missing values by variable")  %>%
+    kable_styling(bootstrap_options = "striped", latex_options = "HOLD_position")
+
+```
+
+### Produce dataset that is complete
+The missing value reported above are **not at random**, and there are patterns in the missing data. For example, as discuessed in the EDA part, the missingness of `CVDMEDST` is due to person not fasted or age under 18. Similarly,both `LDLRESB` and `LDLNTR` exclude persons with fasting triglycerides results ≥4.5mmol/L. 
+
+So we should not delete these columns with high missing ratio, as the missingness implies certain information, and also we shouldnot delete the rows with missing value, as they stands for specific groups (such as the person under 18 years old). Also, most modeling functions in R offer options for dealing with missing values. Therefore, to avoid loss informtion, I donot delete any row or columns with NA. Just filling them with value 0, and keep the missing value indicator in the final dataset. Combining with the indicator columns for missing value and outliers, the final complete dataset has 12153 rows with 106 columns.
+
+The **most missing variables have high correlation, we will perform a PCA with missing values to explore the correlation between variables.** using R package *`library(missMDA)`* in the next stage
+
+***
+Variable explaination 
+
+- `LDLRESB` (Fasting LDL cholesterol and the persons with triglycerides results ≥4.5mmol/L were excluded).
+- `LDLNTR` (Fasting LDL cholesterol status and All persons with fasting triglycerides results ≥4.5mmol/L were excluded
+.)
+- `CVDMEDST` (Dyslipidaemia status, given Persons aged 18 years and over who participated in the biomedical component and fasted for 8 hours or more)
+```{r}
+new_tech_biom <- new_tech_biom %>% mutate_all(funs(replace_na(.,0))) # replace NA with 0
+```
+
+```{r}
+dim(new_tech_biom) # the size of complete dataset
+```
+
+The size of complete dataset is `r dim(new_tech_biom)`.
+
+# Save result
+called `clean_data.Rdata` 
+
+```{r}
+save(new_tech_biom, dict_biom,
+     file = "clean_data.Rdata")
+```
+
